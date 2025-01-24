@@ -63,3 +63,7 @@ def get_top_k_features(X, y, k=10):
         print('keeping only the top-{} features. Order was {}'.format(k,
             top_features))
         return list(top_features[:k])
+        
+class LSTMCell(paddle.nn.LSTMCell):
+    def forward(self, inputs, states = None):
+        return super().forward(inputs, states)[1]

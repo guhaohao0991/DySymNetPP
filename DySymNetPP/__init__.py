@@ -1,1 +1,1 @@
-name = 'DymSymNet'
+name = 'DymSymNetPP'

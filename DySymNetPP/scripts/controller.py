@@ -1,6 +1,6 @@
 import sys
 sys.path.append('/home/aistudio/DySymNetPP')
-from paddle_utils import *
+from .paddle_utils import *
 import paddle
 
 

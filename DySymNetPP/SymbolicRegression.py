@@ -502,74 +502,80 @@ class SymboliRegression:
         while 0 <= trial < trials:
             print('Training on function ' + self.func_name + ' Trial ' +
                 str(trial + 1) + ' out of ' + str(trials))
+
+            # reinitialize for each trial
             if self.auto:
-                net = SymbolicNet(self.n_layers, x_dim=self.x_dim, funcs=
-                    self.funcs_per_layer, initial_weights=None, init_stddev
-                    =init_stddev, add_bias=self.add_bias).to(self.device)
+                net = SymbolicNet(self.n_layers, 
+                                  x_dim=self.x_dim, funcs=self.funcs_per_layer, 
+                                  initial_weights=None, 
+                                  init_stddev=init_stddev, 
+                                  add_bias=self.add_bias).to(self.device)
             else:
-                net = SymbolicNet(self.n_layers, x_dim=self.x_dim, funcs=
-                    self.funcs_per_layer, initial_weights=[paddle.mod(x=
-                    paddle.normal(mean=0, std=self.init_sd_first, shape=(
-                    self.x_dim, width_per_layer[0] + n_double_per_layer[0])
-                    ), y=paddle.to_tensor(2, dtype=paddle.normal(mean=0,
-                    std=self.init_sd_first, shape=(self.x_dim, 
-                    width_per_layer[0] + n_double_per_layer[0])).dtype)),
-                    paddle.mod(x=paddle.normal(mean=0, std=self.
-                    init_sd_middle, shape=(width_per_layer[0], 
-                    width_per_layer[1] + n_double_per_layer[1])), y=paddle.
-                    to_tensor(2, dtype=paddle.normal(mean=0, std=self.
-                    init_sd_middle, shape=(width_per_layer[0], 
-                    width_per_layer[1] + n_double_per_layer[1])).dtype)),
-                    paddle.mod(x=paddle.normal(mean=0, std=self.
-                    init_sd_middle, shape=(width_per_layer[1], 
-                    width_per_layer[2] + n_double_per_layer[2])), y=paddle.
-                    to_tensor(2, dtype=paddle.normal(mean=0, std=self.
-                    init_sd_middle, shape=(width_per_layer[1], 
-                    width_per_layer[2] + n_double_per_layer[2])).dtype)),
-                    paddle.mod(x=paddle.normal(mean=0, std=self.
-                    init_sd_last, shape=(width_per_layer[-1], 1)), y=paddle
-                    .to_tensor(2, dtype=paddle.normal(mean=0, std=self.
-                    init_sd_last, shape=(width_per_layer[-1], 1)).dtype))]).to(
-                    self.device)
+                net = SymbolicNet(self.n_layers, 
+                                  x_dim=self.x_dim, 
+                                  funcs=self.funcs_per_layer, 
+                                  initial_weights=[
+                                    # kind of a hack for truncated normal distribution
+                                    paddle.mod(x=paddle.normal(mean=0, std=self.init_sd_first, shape=(self.x_dim, width_per_layer[0] + n_double_per_layer[0])), 
+                                    y=paddle.to_tensor(2, dtype=paddle.normal(mean=0,std=self.init_sd_first, shape=(self.x_dim, width_per_layer[0] + n_double_per_layer[0])).dtype)),
+                                    # binary operator has two inputs
+                                    paddle.mod(x=paddle.normal(mean=0, std=self.init_sd_middle, shape=(width_per_layer[0], width_per_layer[1] + n_double_per_layer[1])), 
+                                    y=paddle.to_tensor(2, dtype=paddle.normal(mean=0, std=self.init_sd_middle, shape=(width_per_layer[0], width_per_layer[1] + n_double_per_layer[1])).dtype)),
+
+                                    paddle.mod(x=paddle.normal(mean=0, std=self.init_sd_middle, shape=(width_per_layer[1], width_per_layer[2] + n_double_per_layer[2])), 
+                                    y=paddle.to_tensor(2, dtype=paddle.normal(mean=0, std=self.init_sd_middle, shape=(width_per_layer[1], width_per_layer[2] + n_double_per_layer[2])).dtype)),
+                                    paddle.mod(x=paddle.normal(mean=0, std=self.init_sd_last, shape=(width_per_layer[-1], 1)), 
+                                    y=paddle.to_tensor(2, dtype=paddle.normal(mean=0, std=self.init_sd_last, shape=(width_per_layer[-1], 1)).dtype))
+                                    ]).to(self.device)
             # net.to(self.dtype)
             loss_val = np.nan
             restart_flag = False
             while np.isnan(loss_val):
+                # training restarts if gradients blow up
                 criterion = paddle.nn.MSELoss()
-                optimizer = paddle.optimizer.RMSProp(parameters=net.
-                    parameters(), learning_rate=self.config.learning_rate2,
-                    rho=0.9, epsilon=1e-10, momentum=0.0, centered=False,
-                    weight_decay=0.0)
+                optimizer = paddle.optimizer.RMSProp(parameters=net.parameters(), 
+                                                     learning_rate=self.config.learning_rate2,
+                                                     rho=0.9, epsilon=1e-10, 
+                                                     momentum=0.0, centered=False,
+                                                     weight_decay=0.0)
+                # adaptive learning rate
                 lmbda = lambda epoch: 0.1
-                tmp_lr = paddle.optimizer.lr.MultiplicativeDecay(lr_lambda=
-                    lmbda, learning_rate=optimizer.get_lr())
+                tmp_lr = paddle.optimizer.lr.MultiplicativeDecay(lr_lambda=lmbda, learning_rate=optimizer.get_lr())
                 optimizer.set_lr_scheduler(tmp_lr)
                 scheduler = tmp_lr
+
                 if self.clip_grad:
                     que = collections.deque()
-                net.train()
+
+                net.train() # Set the model to training mode
+
+                # First stage of training, preceded by 0th warmup stage
                 for epoch in range(self.config.n_epochs1 + 2000):
-                    optimizer.clear_gradients(set_to_zero=False)
-                    outputs = net(data)
+                    optimizer.clear_gradients(set_to_zero=False) # zero the parameters' gradient
+                    outputs = net(data) # forward pass
                     regularization = L12Smooth(a=0.01)
                     mse_loss = criterion(outputs, target)
+
                     reg_loss = regularization(net.get_weights_tensor())
                     loss = mse_loss + self.config.reg_weight * reg_loss
                     loss.backward()
+
                     if self.clip_grad:
                         grad_norm = log_grad_norm(net)
                         que.append(grad_norm)
                         if len(que) > self.window_size:
                             que.popleft()
                             clip_threshold = 0.1 * sum(que) / len(que)
-                            paddle.nn.utils.clip_grad_norm_(parameters=net.
-                                parameters(), max_norm=clip_threshold,
-                                norm_type=2)
+                            paddle.nn.utils.clip_grad_norm_(parameters=net.parameters(), 
+                                                            max_norm=clip_threshold,
+                                                            norm_type=2)
                         else:
-                            paddle.nn.utils.clip_grad_norm_(parameters=net.
-                                parameters(), max_norm=self.max_norm,
-                                norm_type=2)
+                            paddle.nn.utils.clip_grad_norm_(parameters=net.parameters(), 
+                                                            max_norm=self.max_norm,
+                                                            norm_type=2)
                     optimizer.step()
+
+                    # Summary
                     if epoch % self.config.summary_step == 0:
                         error_val = mse_loss.item()
                         reg_val = reg_loss.item()
@@ -578,32 +584,34 @@ class SymboliRegression:
                         reg_list.append(reg_val)
                         loss_list.append(loss_val)
                         with paddle.no_grad():
-                            test_outputs = net(test_data)
+                            test_outputs = net(test_data) # [num_points, 1] same as test_target
                             if self.reward_type == 'mse':
-                                test_loss = paddle.nn.functional.mse_loss(input
-                                    =test_outputs, label=test_target)
+                                test_loss = paddle.nn.functional.mse_loss(input=test_outputs, label=test_target)
                             elif self.reward_type == 'nrmse':
                                 test_loss = nrmse(test_target, test_outputs)
                             error_test_val = test_loss.item()
                             error_test_list.append(error_test_val)
-                            test_outputs = paddle.where(condition=paddle.
-                                isnan(x=test_outputs), x=paddle.full_like(x
-                                =test_outputs, fill_value=100), y=test_outputs)
+                            test_outputs = paddle.where(condition=paddle.isnan(x=test_outputs), 
+                                                        x=paddle.full_like(x=test_outputs, fill_value=100), 
+                                                        y=test_outputs)
                             r2 = R_Square(test_target, test_outputs)
                             r2_test_list.append(r2)
+
                         if self.config.verbose:
-                            print(
-                                'Epoch: {}\tTotal training loss: {}\tTest {}: {}'
-                                .format(epoch, loss_val, self.reward_type,
-                                error_test_val))
-                        if np.isnan(loss_val) or loss_val > 1000:
+                            print('Epoch: {}\tTotal training loss: {}\tTest {}: {}'
+                                  .format(epoch, loss_val, self.reward_type,error_test_val))
+                        if np.isnan(loss_val) or loss_val > 1000: # if loss goes to nan, restart training
                             restart_flag = True
                             break
+
                     if epoch == 2000:
-                        scheduler.step()
+                        scheduler.step() # lr /= 10
+
                 if restart_flag:
                     break
-                scheduler.step()
+
+                scheduler.step() # lr /= 10
+
                 for epoch in range(self.config.n_epochs2):
                     optimizer.clear_gradients(set_to_zero=False)
                     outputs = net(data)
@@ -618,14 +626,15 @@ class SymboliRegression:
                         if len(que) > self.window_size:
                             que.popleft()
                             clip_threshold = 0.1 * sum(que) / len(que)
-                            paddle.nn.utils.clip_grad_norm_(parameters=net.
-                                parameters(), max_norm=clip_threshold,
-                                norm_type=2)
+                            paddle.nn.utils.clip_grad_norm_(parameters=net.parameters(), 
+                                                            max_norm=clip_threshold,
+                                                            norm_type=2)
                         else:
-                            paddle.nn.utils.clip_grad_norm_(parameters=net.
-                                parameters(), max_norm=self.max_norm,
-                                norm_type=2)
+                            paddle.nn.utils.clip_grad_norm_(parameters=net.parameters(), 
+                                                            max_norm=self.max_norm,
+                                                            norm_type=2)
                     optimizer.step()
+
                     if epoch % self.config.summary_step == 0:
                         error_val = mse_loss.item()
                         reg_val = reg_loss.item()
@@ -659,21 +668,26 @@ class SymboliRegression:
                 if retrain_num == 5:
                     return 10000, None, None
                 continue
+
+            # After the training, the symbolic expression is translated into an expression by pruning
             with paddle.no_grad():
                 weights = net.get_weights()
                 if self.add_bias:
                     biases = net.get_biases()
                 else:
                     biases = None
-                expr = pretty_print.network(weights, self.funcs_per_layer,
-                    self.vars_name, self.threshold, self.add_bias, biases)
+                expr = pretty_print.network(weights, self.funcs_per_layer,self.vars_name, self.threshold, self.add_bias, biases)
+
+            # Results of the training trials
             error_test_final.append(error_test_list[-1])
             r2_test_final.append(r2_test_list[-1])
             eq_list.append(expr)
+
             trial += 1
-        error_expr_sorted = sorted(zip(error_test_final, r2_test_final,
-            eq_list), key=lambda x: x[0])
+
+        error_expr_sorted = sorted(zip(error_test_final, r2_test_final, eq_list), key=lambda x: x[0])
         print('error_expr_sorted', error_expr_sorted)
+
         return error_expr_sorted[0]
 
     def load_data(self, path):
@@ -688,9 +702,20 @@ class SymboliRegression:
 
 
 if __name__ == '__main__':
+    # Configuration parameters
     config = Params()
-    SR = SymboliRegression(config=config, func='x_1 + x_2', func_name='x_1+x_2'
-        )
+
+    # Example 1: Input ground truth function, auto generate training data to extract the symbolic expression
+    SR = SymboliRegression(config=config, func='x_1 + x_2', func_name='x_1+x_2')
+    eq, R2, error, relative_error = SR.solve_environment()
+    print('Expression: ', eq)
+    print('R2: ', R2)
+    print('error: ', error)
+    print('relative_error: ', relative_error)
+    print('log(1 + MSE): ', np.log(1 + error))
+
+    # Example 2: Input CSV file, use it to train and extract the symbolic expression
+    SR = SymboliRegression(config=config, func_name='Nguyen-1', data_path='./data/Nguyen-1.csv', )
     eq, R2, error, relative_error = SR.solve_environment()
     print('Expression: ', eq)
     print('R2: ', R2)
