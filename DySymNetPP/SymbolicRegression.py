@@ -198,7 +198,7 @@ class SymboliRegression:
             optimizer = paddle.optimizer.RMSProp(parameters=self.agent.parameters(), 
                                                  learning_rate=self.config.learning_rate1,
                                                  weight_decay=0.0, epsilon=1e-08, rho=0.99)
-            
+        IPS_all = []    
         for i in range(self.num_epochs):
             print('******************** Epoch {:02d} ********************'.format(i))
             expressions = []
@@ -211,7 +211,8 @@ class SymboliRegression:
             j = 0
             while j < self.batch_size:
                 (error, R2, eq, log_probs, entropies, num_layers,
-                    num_func_layer, funcs_per_layer_name) = self.play_episodes()
+                    num_func_layer, funcs_per_layer_name, IPS_temp) = self.play_episodes()
+                IPS_all.append(IPS_temp)
                 # play an episode
                 # if the expression is invalid, resample the structure of symbolic network
                 if 'x_1' not in str(eq) or eq is None:
@@ -333,11 +334,11 @@ class SymboliRegression:
             plt.show()
             plt.savefig(os.path.join(self.results_dir, 'reward_{}_{}.png'.
                 format(self.func_name, self.now_time)))
-            
+        IPS_filtered = [ips for ips in IPS_all if ips is not None]
         if early_stopping:
-            return eq, R2, error, relative_error
+            return eq, R2, error, relative_error, np.array(IPS_filtered).mean()
         else:
-            return best_expression, best_performance.item(), 1 / max(rewards).item() - 1, best_relative_error
+            return best_expression, best_performance.item(), 1 / max(rewards).item() - 1, best_relative_error, np.array(IPS_filtered).mean()
 
     def bfgs(self, eq, X, y, n_restarts):
         variable = self.vars_name
@@ -458,10 +459,10 @@ class SymboliRegression:
         print('Operators of each layer obtained by sampling: ', self.funcs_per_layer_name)
         
         ############################### Start training ##############################
-        error_test, r2_test, eq = self.train(self.config.trials)
+        error_test, r2_test, eq, IPS = self.train(self.config.trials)
         
         return (error_test, r2_test, eq, log_probs, entropies, 
-                self.n_layers, self.num_func_layer, self.funcs_per_layer_name)
+                self.n_layers, self.num_func_layer, self.funcs_per_layer_name, IPS)
 
     def train(self, trials=1):
         """Train the network to find a given function"""
@@ -549,6 +550,8 @@ class SymboliRegression:
 
                 net.train() # Set the model to training mode
 
+                start_time = time.time()
+
                 # First stage of training, preceded by 0th warmup stage
                 for epoch in range(self.config.n_epochs1 + 2000):
                     optimizer.clear_gradients(set_to_zero=False) # zero the parameters' gradient
@@ -607,10 +610,15 @@ class SymboliRegression:
                     if epoch == 2000:
                         scheduler.step() # lr /= 10
 
+                end_time = time.time()
+                epoch1_avetime = (end_time - start_time)/(self.config.n_epochs1 + 2000)
+                IPS1 = epoch1_avetime/test_target.shape[0]
                 if restart_flag:
                     break
 
                 scheduler.step() # lr /= 10
+
+                start_time = time.time()
 
                 for epoch in range(self.config.n_epochs2):
                     optimizer.clear_gradients(set_to_zero=False)
@@ -663,10 +671,18 @@ class SymboliRegression:
                                 error_test_val))
                         if np.isnan(loss_val) or loss_val > 1000:
                             break
+                end_time = time.time()
+                epoch2_avetime = (end_time - start_time)/self.config.n_epochs2
+                IPS2 = epoch2_avetime/test_target.shape[0]
+
+                
+                print('Epoch1 time per sample: {} seconds/sample\nEpoch2 : {} seconds/sample. N_sampel: {}'
+                          .format(IPS1, IPS2, test_target.shape[0]))
+             
             if restart_flag:
                 retrain_num += 1
                 if retrain_num == 5:
-                    return 10000, None, None
+                    return 10000, None, None, None
                 continue
 
             # After the training, the symbolic expression is translated into an expression by pruning
@@ -687,8 +703,7 @@ class SymboliRegression:
 
         error_expr_sorted = sorted(zip(error_test_final, r2_test_final, eq_list), key=lambda x: x[0])
         print('error_expr_sorted', error_expr_sorted)
-
-        return error_expr_sorted[0]
+        return error_expr_sorted[0][0], error_expr_sorted[0][1], error_expr_sorted[0][2], (IPS1 + IPS2)/2
 
     def load_data(self, path):
         data = pd.read_csv(path)
@@ -707,18 +722,20 @@ if __name__ == '__main__':
 
     # Example 1: Input ground truth function, auto generate training data to extract the symbolic expression
     SR = SymboliRegression(config=config, func='x_1 + x_2', func_name='x_1+x_2')
-    eq, R2, error, relative_error = SR.solve_environment()
+    eq, R2, error, relative_error, IPS_ave = SR.solve_environment()
     print('Expression: ', eq)
     print('R2: ', R2)
     print('error: ', error)
     print('relative_error: ', relative_error)
     print('log(1 + MSE): ', np.log(1 + error))
+    print('IPS average: ', IPS_ave)
 
     # Example 2: Input CSV file, use it to train and extract the symbolic expression
     SR = SymboliRegression(config=config, func_name='Nguyen-1', data_path='./data/Nguyen-1.csv', )
-    eq, R2, error, relative_error = SR.solve_environment()
+    eq, R2, error, relative_error, IPS_ave = SR.solve_environment()
     print('Expression: ', eq)
     print('R2: ', R2)
     print('error: ', error)
     print('relative_error: ', relative_error)
     print('log(1 + MSE): ', np.log(1 + error))
+    print('IPS average: ', IPS_ave)
